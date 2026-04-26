@@ -1,4 +1,4 @@
-import 'package:flutter/foundation.dart' show kIsWeb; // Para detectar si es Web
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
@@ -34,9 +34,8 @@ class DatabaseHelper {
 
   Future<Database> _initDB(String filePath) async {
     if (kIsWeb) {
-      // Configuración para WEB (iPhone Safari)
-      var databaseFactory = databaseFactoryFfiWeb;
-      return await databaseFactory.openDatabase(
+      // Configuración robusta para Web / iPhone Safari
+      return await databaseFactoryFfiWeb.openDatabase(
         filePath,
         options: OpenDatabaseOptions(
           version: 1,
@@ -44,7 +43,7 @@ class DatabaseHelper {
         ),
       );
     } else {
-      // Configuración para ANDROID
+      // Configuración original para Android
       final dbPath = await getDatabasesPath();
       final path = join(dbPath, filePath);
       return await openDatabase(
@@ -81,8 +80,7 @@ class DatabaseHelper {
     ''');
   }
 
-  // --- El resto de tus métodos (insertPerfil, getAllPerfiles, registrarCorte, etc.) se mantienen igual ---
-  // --- Cópialos debajo de aquí de tu código original ---
+  // ─── PERFILES ────────────────────────────────────────────────────────────────
 
   Future<int> insertPerfil(Perfil perfil) async {
     final db = await database;
@@ -105,6 +103,8 @@ class DatabaseHelper {
     await db.delete('perfiles', where: 'id = ?', whereArgs: [id]);
   }
 
+  // ─── RETALES ─────────────────────────────────────────────────────────────────
+
   Future<int> insertRetal(Retal retal) async {
     final db = await database;
     return db.insert('retales', retal.toMap());
@@ -126,17 +126,30 @@ class DatabaseHelper {
     await db.delete('retales', where: 'id = ?', whereArgs: [id]);
   }
 
+  // ─── ALGORITMO DE CORTE ──────────────────────────────────────────────────────
+
   Future<ResultadoCorte> registrarCorte(int perfilId, int longitudCorte) async {
     final db = await database;
+
     return db.transaction<ResultadoCorte>((txn) async {
-      final perfilRows = await txn.query('perfiles', where: 'id = ?', whereArgs: [perfilId]);
-      if (perfilRows.isEmpty) return const ResultadoCorte(exito: false, mensaje: 'Perfil no encontrado');
+      final perfilRows = await txn.query(
+        'perfiles',
+        where: 'id = ?',
+        whereArgs: [perfilId],
+      );
+      if (perfilRows.isEmpty) {
+        return const ResultadoCorte(exito: false, mensaje: 'Perfil no encontrado');
+      }
       final perfil = Perfil.fromMap(perfilRows.first);
 
       if (longitudCorte > perfil.longitudInicial) {
-        return ResultadoCorte(exito: false, mensaje: 'Corte excede longitud');
+        return ResultadoCorte(
+          exito: false,
+          mensaje: 'El corte (${longitudCorte}mm) supera la longitud de la barra (${perfil.longitudInicial}mm)',
+        );
       }
 
+      // Buscar el retal más pequeño que sea suficiente (best-fit)
       final retalesRows = await txn.query(
         'retales',
         where: 'perfil_id = ? AND longitud >= ?',
@@ -148,17 +161,41 @@ class DatabaseHelper {
       if (retalesRows.isNotEmpty) {
         final retal = Retal.fromMap(retalesRows.first);
         final sobrante = retal.longitud - longitudCorte;
+
         if (sobrante == 0) {
           await txn.delete('retales', where: 'id = ?', whereArgs: [retal.id]);
         } else {
-          await txn.update('retales', {'longitud': sobrante}, where: 'id = ?', whereArgs: [retal.id]);
+          await txn.update(
+            'retales',
+            {'longitud': sobrante},
+            where: 'id = ?',
+            whereArgs: [retal.id],
+          );
         }
-        return ResultadoCorte(exito: true, mensaje: 'Retal usado', usadoRetal: true, sobrante: sobrante);
+
+        return ResultadoCorte(
+          exito: true,
+          mensaje: 'Cortado de retal de ${retal.longitud}mm. Sobrante: ${sobrante}mm',
+          usadoRetal: true,
+          sobrante: sobrante,
+        );
       }
 
-      if (perfil.barrasEnteras <= 0) return const ResultadoCorte(exito: false, mensaje: 'Sin stock');
+      // No hay retal válido → abrir una barra entera
+      if (perfil.barrasEnteras <= 0) {
+        return const ResultadoCorte(
+          exito: false,
+          mensaje: 'Stock insuficiente. No hay barras ni retales disponibles.',
+        );
+      }
 
-      await txn.update('perfiles', {'barras_enteras': perfil.barrasEnteras - 1}, where: 'id = ?', whereArgs: [perfilId]);
+      await txn.update(
+        'perfiles',
+        {'barras_enteras': perfil.barrasEnteras - 1},
+        where: 'id = ?',
+        whereArgs: [perfilId],
+      );
+
       final sobrante = perfil.longitudInicial - longitudCorte;
       if (sobrante > 0) {
         await txn.insert('retales', {
@@ -167,7 +204,13 @@ class DatabaseHelper {
           'fecha_creacion': DateTime.now().toIso8601String(),
         });
       }
-      return ResultadoCorte(exito: true, mensaje: 'Barra abierta', usadoRetal: false, sobrante: sobrante);
+
+      return ResultadoCorte(
+        exito: true,
+        mensaje: 'Barra nueva abierta. Sobrante: ${sobrante}mm',
+        usadoRetal: false,
+        sobrante: sobrante,
+      );
     });
   }
 }
