@@ -22,13 +22,20 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.27.4'
           channel: stable
+          cache: true
 
-      - run: flutter pub get
+      - name: Flutter version
+        run: flutter --version
 
-      - run: flutter build web --release --base-href /stock-pvc/
+      - name: Install dependencies
+        run: flutter pub get
 
-      - uses: actions/configure-pages@v5
+      - name: Build web
+        run: flutter build web --release --base-href /stock-pvc/
+
+      - uses: actions/configure-pages@v4
 
       - uses: actions/upload-pages-artifact@v3
         with:
